@@ -14,10 +14,11 @@
 //! use bio::alignment::pairwise::*;
 //! use bio::alignment::AlignmentOperation::*;
 //! use bio::scores::blosum62;
+//! use std::marker::PhantomData;
 //!
 //! let x = b"ACCGTGGAT";
 //! let y = b"AAAAACCGTTGAT";
-//! let score = |a: u8, b: u8| if a == b { 1i32 } else { -1i32 };
+//! let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 };
 //! // gap open score: -5, gap extension score: -1
 //! let mut aligner = Aligner::with_capacity(x.len(), y.len(), -5, -1, &score);
 //! let alignment = aligner.semiglobal(x, y);
@@ -113,9 +114,10 @@
 //! // the rest of the string in the alignment
 //!
 //! let scoring = Scoring {
+//!     _item: PhantomData,
 //!     gap_open: -5,
 //!     gap_extend: -1,
-//!     match_fn: |a: u8, b: u8| if a == b { 1i32 } else { -3i32 },
+//!     match_fn: |a: &u8, b: &u8| if *a == *b { 1i32 } else { -3i32 },
 //!     match_scores: Some((1, -3)),
 //!     xclip_prefix: -10,
 //!     xclip_suffix: MIN_SCORE,
@@ -153,9 +155,9 @@
 use std::cmp::max;
 use std::i32;
 use std::iter::repeat;
+use std::marker::PhantomData;
 
 use crate::alignment::{Alignment, AlignmentMode, AlignmentOperation};
-use crate::utils::TextSlice;
 
 pub mod banded;
 
@@ -165,8 +167,8 @@ pub mod banded;
 pub const MIN_SCORE: i32 = -858_993_459;
 
 /// Trait required to instantiate a Scoring instance
-pub trait MatchFunc {
-    fn score(&self, a: u8, b: u8) -> i32;
+pub trait MatchFunc<T> {
+    fn score(&self, a: &T, b: &T) -> i32;
 }
 
 /// A concrete data structure which implements trait MatchFunc with constant
@@ -174,12 +176,20 @@ pub trait MatchFunc {
 #[derive(
     Default, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Serialize, Deserialize,
 )]
-pub struct MatchParams {
+pub struct MatchParams<T>
+where
+    T: Eq,
+{
+    #[serde(skip)]
+    pub _item: PhantomData<T>,
     pub match_score: i32,
     pub mismatch_score: i32,
 }
 
-impl MatchParams {
+impl<T> MatchParams<T>
+where
+    T: Eq,
+{
     /// Create new MatchParams instance with given match and mismatch scores
     ///
     /// # Arguments
@@ -190,16 +200,20 @@ impl MatchParams {
         assert!(match_score >= 0, "match_score can't be negative");
         assert!(mismatch_score <= 0, "mismatch_score can't be positive");
         MatchParams {
+            _item: PhantomData,
             match_score,
             mismatch_score,
         }
     }
 }
 
-impl MatchFunc for MatchParams {
+impl<T> MatchFunc<T> for MatchParams<T>
+where
+    T: Eq,
+{
     #[inline]
-    fn score(&self, a: u8, b: u8) -> i32 {
-        if a == b {
+    fn score(&self, a: &T, b: &T) -> i32 {
+        if *a == *b {
             self.match_score
         } else {
             self.mismatch_score
@@ -207,13 +221,14 @@ impl MatchFunc for MatchParams {
     }
 }
 
-/// The trait Matchfunc is also implemented for Fn(u8, u8) -> i32 so that Scoring
+/// The trait Matchfunc is also implemented for Fn(&u8, &u8) -> i32 so that Scoring
 /// can be instantiated using closures and custom user defined functions
-impl<F> MatchFunc for F
+impl<F, T> MatchFunc<T> for F
 where
-    F: Fn(u8, u8) -> i32,
+    F: Fn(&T, &T) -> i32,
+    T: Eq,
 {
-    fn score(&self, a: u8, b: u8) -> i32 {
+    fn score(&self, a: &T, b: &T) -> i32 {
         (self)(a, b)
     }
 }
@@ -226,7 +241,9 @@ where
 #[derive(
     Default, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Serialize, Deserialize,
 )]
-pub struct Scoring<F: MatchFunc> {
+pub struct Scoring<F: MatchFunc<T>, T = u8> {
+    #[serde(skip)]
+    pub _item: PhantomData<T>,
     pub gap_open: i32,
     pub gap_extend: i32,
     pub match_fn: F,
@@ -237,7 +254,10 @@ pub struct Scoring<F: MatchFunc> {
     pub yclip_suffix: i32,
 }
 
-impl Scoring<MatchParams> {
+impl<T> Scoring<MatchParams<T>, T>
+where
+    T: Eq,
+{
     /// Create new Scoring instance with given gap open, gap extend penalties
     /// match and mismatch scores. The clip penalties are set to `MIN_SCORE` by default
     ///
@@ -257,6 +277,7 @@ impl Scoring<MatchParams> {
         assert!(gap_extend <= 0, "gap_extend can't be positive");
 
         Scoring {
+            _item: PhantomData,
             gap_open,
             gap_extend,
             match_fn: MatchParams::new(match_score, mismatch_score),
@@ -269,7 +290,10 @@ impl Scoring<MatchParams> {
     }
 }
 
-impl<F: MatchFunc> Scoring<F> {
+impl<F, T> Scoring<F, T>
+where
+    F: MatchFunc<T>,
+{
     /// Create new Scoring instance with given gap open, gap extend penalties
     /// and the score function. The clip penalties are set to [`MIN_SCORE`](constant.MIN_SCORE.html) by default
     ///
@@ -284,6 +308,7 @@ impl<F: MatchFunc> Scoring<F> {
         assert!(gap_extend <= 0, "gap_extend can't be positive");
 
         Scoring {
+            _item: PhantomData,
             gap_open,
             gap_extend,
             match_fn,
@@ -303,7 +328,7 @@ impl<F: MatchFunc> Scoring<F> {
     ///
     /// ```rust
     /// use bio::alignment::pairwise::{Scoring, MIN_SCORE};
-    /// let scoring = Scoring::from_scores(0, -2, 1, -2).xclip(-5);
+    /// let scoring = Scoring::<_, u8>::from_scores(0, -2, 1, -2).xclip(-5);
     /// assert!(scoring.xclip_prefix == -5);
     /// assert!(scoring.yclip_prefix == MIN_SCORE);
     /// assert!(scoring.xclip_suffix == -5);
@@ -325,7 +350,7 @@ impl<F: MatchFunc> Scoring<F> {
     /// # Example
     /// ```rust
     /// use bio::alignment::pairwise::{Scoring, MIN_SCORE};
-    /// let scoring = Scoring::from_scores(0, -2, 1, -2).xclip_prefix(-5);
+    /// let scoring = Scoring::<_, u8>::from_scores(0, -2, 1, -2).xclip_prefix(-5);
     /// assert!(scoring.xclip_prefix == -5);
     /// assert!(scoring.yclip_prefix == MIN_SCORE);
     /// assert!(scoring.xclip_suffix == MIN_SCORE);
@@ -345,7 +370,7 @@ impl<F: MatchFunc> Scoring<F> {
     ///
     /// ```rust
     /// use bio::alignment::pairwise::{Scoring, MIN_SCORE};
-    /// let scoring = Scoring::from_scores(0, -2, 1, -2).xclip_suffix(-5);
+    /// let scoring = Scoring::<_, u8>::from_scores(0, -2, 1, -2).xclip_suffix(-5);
     /// assert!(scoring.xclip_prefix == MIN_SCORE);
     /// assert!(scoring.yclip_prefix == MIN_SCORE);
     /// assert!(scoring.xclip_suffix == -5);
@@ -365,7 +390,7 @@ impl<F: MatchFunc> Scoring<F> {
     ///
     /// ```rust
     /// use bio::alignment::pairwise::{Scoring, MIN_SCORE};
-    /// let scoring = Scoring::from_scores(0, -2, 1, -2).yclip(-5);
+    /// let scoring = Scoring::<_, u8>::from_scores(0, -2, 1, -2).yclip(-5);
     /// assert!(scoring.xclip_prefix == MIN_SCORE);
     /// assert!(scoring.yclip_prefix == -5);
     /// assert!(scoring.xclip_suffix == MIN_SCORE);
@@ -386,7 +411,7 @@ impl<F: MatchFunc> Scoring<F> {
     ///
     /// ```rust
     /// use bio::alignment::pairwise::{Scoring, MIN_SCORE};
-    /// let scoring = Scoring::from_scores(0, -2, 1, -2).yclip_prefix(-5);
+    /// let scoring = Scoring::<_, u8>::from_scores(0, -2, 1, -2).yclip_prefix(-5);
     /// assert!(scoring.xclip_prefix == MIN_SCORE);
     /// assert!(scoring.yclip_prefix == -5);
     /// assert!(scoring.xclip_suffix == MIN_SCORE);
@@ -406,7 +431,7 @@ impl<F: MatchFunc> Scoring<F> {
     ///
     /// ```rust
     /// use bio::alignment::pairwise::{Scoring, MIN_SCORE};
-    /// let scoring = Scoring::from_scores(0, -2, 1, -2).yclip_suffix(-5);
+    /// let scoring = Scoring::<_, u8>::from_scores(0, -2, 1, -2).yclip_suffix(-5);
     /// assert!(scoring.xclip_prefix == MIN_SCORE);
     /// assert!(scoring.yclip_prefix == MIN_SCORE);
     /// assert!(scoring.xclip_suffix == MIN_SCORE);
@@ -460,7 +485,7 @@ impl<F: MatchFunc> Scoring<F> {
 /// `scoring` - see [`bio::alignment::pairwise::Scoring`](struct.Scoring.html)
 #[allow(non_snake_case)]
 #[derive(Default, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Serialize, Deserialize)]
-pub struct Aligner<F: MatchFunc> {
+pub struct Aligner<F: MatchFunc<T>, T = u8> {
     I: [Vec<i32>; 2],
     D: [Vec<i32>; 2],
     S: [Vec<i32>; 2],
@@ -468,12 +493,12 @@ pub struct Aligner<F: MatchFunc> {
     Ly: Vec<usize>,
     Sn: Vec<i32>,
     traceback: Traceback,
-    scoring: Scoring<F>,
+    scoring: Scoring<F, T>,
 }
 
 const DEFAULT_ALIGNER_CAPACITY: usize = 200;
 
-impl<F: MatchFunc> Aligner<F> {
+impl<F: MatchFunc<T>, T> Aligner<F, T> {
     /// Create new aligner instance with given gap open and gap extend penalties
     /// and the score function.
     ///
@@ -525,7 +550,7 @@ impl<F: MatchFunc> Aligner<F> {
     /// # Arguments
     ///
     /// * `scoring` - the scoring struct (see bio::alignment::pairwise::Scoring)
-    pub fn with_scoring(scoring: Scoring<F>) -> Self {
+    pub fn with_scoring(scoring: Scoring<F, T>) -> Self {
         Aligner::with_capacity_and_scoring(
             DEFAULT_ALIGNER_CAPACITY,
             DEFAULT_ALIGNER_CAPACITY,
@@ -541,7 +566,7 @@ impl<F: MatchFunc> Aligner<F> {
     /// * `m` - the expected size of x
     /// * `n` - the expected size of y
     /// * `scoring` - the scoring struct
-    pub fn with_capacity_and_scoring(m: usize, n: usize, scoring: Scoring<F>) -> Self {
+    pub fn with_capacity_and_scoring(m: usize, n: usize, scoring: Scoring<F, T>) -> Self {
         assert!(scoring.gap_open <= 0, "gap_open can't be positive");
         assert!(scoring.gap_extend <= 0, "gap_extend can't be positive");
         assert!(
@@ -579,7 +604,10 @@ impl<F: MatchFunc> Aligner<F> {
     ///
     /// * `x` - Textslice
     /// * `y` - Textslice
-    pub fn custom(&mut self, x: TextSlice<'_>, y: TextSlice<'_>) -> Alignment {
+    pub fn custom(&mut self, x: &[T], y: &[T]) -> Alignment
+    where
+        T: Eq,
+    {
         let (m, n) = (x.len(), y.len());
         self.traceback.init(m, n);
 
@@ -713,14 +741,14 @@ impl<F: MatchFunc> Aligner<F> {
                 self.S[curr][i] = MIN_SCORE;
             }
 
-            let q = y[j - 1];
+            let q = &y[j - 1];
             let xclip_score = self.scoring.xclip_prefix
                 + max(
                     self.scoring.yclip_prefix,
                     self.scoring.gap_open + self.scoring.gap_extend * (j as i32),
                 );
             for i in 1..m + 1 {
-                let p = x[i - 1];
+                let p = &x[i - 1];
                 let mut tb = TracebackCell::new();
 
                 let m_score = self.S[prev][i - 1] + self.scoring.match_fn.score(p, q);
@@ -915,7 +943,10 @@ impl<F: MatchFunc> Aligner<F> {
     }
 
     /// Calculate global alignment of x against y.
-    pub fn global(&mut self, x: TextSlice<'_>, y: TextSlice<'_>) -> Alignment {
+    pub fn global(&mut self, x: &[T], y: &[T]) -> Alignment
+    where
+        T: Eq,
+    {
         // Store the current clip penalties
         let clip_penalties = [
             self.scoring.xclip_prefix,
@@ -944,7 +975,10 @@ impl<F: MatchFunc> Aligner<F> {
     }
 
     /// Calculate semiglobal alignment of x against y (x is global, y is local).
-    pub fn semiglobal(&mut self, x: TextSlice<'_>, y: TextSlice<'_>) -> Alignment {
+    pub fn semiglobal(&mut self, x: &[T], y: &[T]) -> Alignment
+    where
+        T: Eq,
+    {
         // Store the current clip penalties
         let clip_penalties = [
             self.scoring.xclip_prefix,
@@ -976,7 +1010,10 @@ impl<F: MatchFunc> Aligner<F> {
     }
 
     /// Calculate local alignment of x against y.
-    pub fn local(&mut self, x: TextSlice<'_>, y: TextSlice<'_>) -> Alignment {
+    pub fn local(&mut self, x: &[T], y: &[T]) -> Alignment
+    where
+        T: Eq,
+    {
         // Store the current clip penalties
         let clip_penalties = [
             self.scoring.xclip_prefix,
@@ -1196,7 +1233,7 @@ mod tests {
     fn test_semiglobal() {
         let x = b"ACCGTGGAT";
         let y = b"AAAAACCGTTGAT";
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -1i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 };
         let mut aligner = Aligner::with_capacity(x.len(), y.len(), -5, -1, score);
         let alignment = aligner.semiglobal(x, y);
         assert_eq!(alignment.ystart, 4);
@@ -1212,7 +1249,7 @@ mod tests {
     fn test_semiglobal_gap_open_lt_mismatch() {
         let x = b"ACCGTGGAT";
         let y = b"AAAAACCGTTGAT";
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -5i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -5i32 };
         let mut aligner = Aligner::with_capacity(x.len(), y.len(), -1, -1, score);
         let alignment = aligner.semiglobal(x, y);
         assert_eq!(alignment.ystart, 4);
@@ -1227,7 +1264,7 @@ mod tests {
     fn test_global_affine_ins() {
         let x = b"ACGAGAACA";
         let y = b"ACGACA";
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -3i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -3i32 };
         let mut aligner = Aligner::with_capacity(x.len(), y.len(), -5, -1, score);
         let alignment = aligner.global(x, y);
 
@@ -1242,7 +1279,7 @@ mod tests {
     fn test_global_affine_ins2() {
         let x = b"AGATAGATAGATAGGGAGTTGTGTAGATGATCCACAGT";
         let y = b"AGATAGATAGATGTAGATGATCCACAGT";
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -1i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 };
         let mut aligner = Aligner::with_capacity(x.len(), y.len(), -5, -1, score);
         let alignment = aligner.global(x, y);
 
@@ -1260,7 +1297,7 @@ mod tests {
     fn test_local_affine_ins2() {
         let x = b"ACGTATCATAGATAGATAGGGTTGTGTAGATGATCCACAG";
         let y = b"CGTATCATAGATAGATGTAGATGATCCACAGT";
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -1i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 };
         let mut aligner = Aligner::with_capacity(x.len(), y.len(), -5, -1, score);
         let alignment = aligner.local(x, y);
         assert_eq!(alignment.xstart, 1);
@@ -1271,7 +1308,7 @@ mod tests {
     fn test_local() {
         let x = b"ACCGTGGAT";
         let y = b"AAAAACCGTTGAT";
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -1i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 };
         let mut aligner = Aligner::with_capacity(x.len(), y.len(), -5, -1, score);
         let alignment = aligner.local(x, y);
         assert_eq!(alignment.ystart, 4);
@@ -1286,7 +1323,7 @@ mod tests {
     fn test_global() {
         let x = b"ACCGTGGAT";
         let y = b"AAAAACCGTTGAT";
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -1i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 };
         let mut aligner = Aligner::with_capacity(x.len(), y.len(), -5, -1, score);
         let alignment = aligner.global(x, y);
 
@@ -1333,7 +1370,7 @@ mod tests {
     fn test_issue11() {
         let y = b"TACC"; //GTGGAC";
         let x = b"AAAAACC"; //GTTGACGCAA";
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -1i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 };
         let mut aligner = Aligner::with_capacity(x.len(), y.len(), -5, -1, &score);
         let alignment = aligner.global(x, y);
         assert_eq!(alignment.ystart, 0);
@@ -1348,7 +1385,7 @@ mod tests {
     fn test_issue12_1() {
         let x = b"CCGGCA";
         let y = b"ACCGTTGACGC";
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -1i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 };
         let mut aligner = Aligner::with_capacity(x.len(), y.len(), -5, -1, &score);
         let alignment = aligner.semiglobal(x, y);
         assert_eq!(alignment.xstart, 0);
@@ -1363,7 +1400,7 @@ mod tests {
     fn test_issue12_2() {
         let y = b"CCGGCA";
         let x = b"ACCGTTGACGC";
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -1i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 };
         let mut aligner = Aligner::with_capacity(x.len(), y.len(), -5, -1, &score);
         let alignment = aligner.semiglobal(x, y);
         assert_eq!(alignment.xstart, 0);
@@ -1379,7 +1416,7 @@ mod tests {
     fn test_issue12_3() {
         let y = b"CCGTCCGGCAA";
         let x = b"AAAAACCGTTGACGCAA";
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -1i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 };
         let mut aligner = Aligner::with_capacity(x.len(), y.len(), -5, -1, &score);
         let alignment = aligner.semiglobal(x, y);
 
@@ -1406,7 +1443,7 @@ mod tests {
     fn test_left_aligned_del() {
         let x = b"GTGCATCATGTG";
         let y = b"GTGCATCATCATGTG";
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -1i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 };
         let mut aligner = Aligner::with_capacity(x.len(), y.len(), -5, -1, &score);
         let alignment = aligner.global(x, y);
         println!("\naln:\n{}", alignment.pretty(x, y, 80));
@@ -1429,7 +1466,7 @@ mod tests {
         let x = b"AACCACGTACGTGGGGGGA";
         let y = b"CCACGTACGT";
 
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -1i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 };
         let mut aligner = Aligner::with_capacity(x.len(), y.len(), -5, -1, &score);
         let alignment = aligner.global(x, y);
 
@@ -1452,7 +1489,7 @@ mod tests {
     fn test_left_aligned_ins() {
         let x = b"GTGCATCATCATGTG";
         let y = b"GTGCATCATGTG";
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -1i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 };
         let mut aligner = Aligner::with_capacity(x.len(), y.len(), -5, -1, &score);
         let alignment = aligner.global(x, y);
         println!("\naln:\n{}", alignment.pretty(x, y, 80));
@@ -1472,7 +1509,7 @@ mod tests {
     fn test_aligner_new() {
         let x = b"ACCGTGGAT";
         let y = b"AAAAACCGTTGAT";
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -1i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 };
         let mut aligner = Aligner::new(-5, -1, &score);
 
         let alignment = aligner.semiglobal(x, y);
@@ -1505,7 +1542,7 @@ mod tests {
         let x = b"GAAAACCGTTGAT";
         let y = b"ACCGTGGATGGG";
 
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -1i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 };
         let mut aligner = Aligner::new(-5, -1, &score);
         let alignment = aligner.semiglobal(x, y);
 
@@ -1520,7 +1557,7 @@ mod tests {
         let x = b"TTTT";
         let y = b"AAAA";
 
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -3i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -3i32 };
         let mut aligner = Aligner::new(-5, -1, &score);
         let alignment = aligner.semiglobal(x, y);
 
@@ -1532,7 +1569,7 @@ mod tests {
         let x = b"GGGGG";
         let y = b"GGTAGGG";
 
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -3i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -3i32 };
         let mut aligner = Aligner::new(-5, -1, &score);
         let alignment = aligner.semiglobal(x, y);
 
@@ -1547,7 +1584,7 @@ mod tests {
         let x = b"GGGGGGATG";
         let y = b"ATG";
 
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -1i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 };
         let scoring = Scoring::new(-5, -1, &score).xclip(-5);
 
         let mut aligner = Aligner::with_scoring(scoring);
@@ -1561,7 +1598,7 @@ mod tests {
         let y = b"GGGGGGATG";
         let x = b"ATG";
 
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -1i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 };
         let scoring = Scoring::new(-5, -1, &score).yclip(-5);
 
         let mut aligner = Aligner::with_scoring(scoring);
@@ -1575,7 +1612,7 @@ mod tests {
         let x = b"GAAAA";
         let y = b"CG";
 
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -1i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 };
         let scoring = Scoring::new(-5, -1, &score).xclip(-5).yclip(0);
 
         let mut aligner = Aligner::with_scoring(scoring);
@@ -1589,7 +1626,7 @@ mod tests {
         let y = b"GAAAA";
         let x = b"CG";
 
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -3i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -3i32 };
         let scoring = Scoring::new(-5, -1, &score).yclip(-5).xclip(0);
 
         let mut aligner = Aligner::with_scoring(scoring);
@@ -1600,7 +1637,7 @@ mod tests {
 
     #[test]
     fn test_xclip_prefix_suffix() {
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -1i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 };
         let scoring1 = Scoring::new(-5, -1, &score).xclip(-5);
         let scoring2 = Scoring::new(-5, -1, &score)
             .xclip_prefix(-5)
@@ -1612,7 +1649,7 @@ mod tests {
 
     #[test]
     fn test_yclip_prefix_suffix() {
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -1i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 };
         let scoring1 = Scoring::new(-5, -1, &score).yclip(-5);
         let scoring2 = Scoring::new(-5, -1, &score)
             .yclip_prefix(-5)
@@ -1627,7 +1664,7 @@ mod tests {
         let x = b"TTTTTGGGGGGATGGCCCCCCTTTTTTTTTTGGGAAAAAAAAAGGGGGG";
         let y = b"GGGGGGATTTCCCCCCCCCTTTTTTTTTTAAAAAAAAA";
 
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -3i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -3i32 };
         let scoring = Scoring::new(-5, -1, &score).xclip(-5).yclip(0);
 
         let mut aligner = Aligner::with_scoring(scoring);

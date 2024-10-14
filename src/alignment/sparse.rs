@@ -31,7 +31,7 @@ use crate::data_structures::bit_tree::MaxBitTree;
 use fxhash::FxHasher;
 use std::cmp::{max, min};
 use std::collections::HashMap;
-use std::hash::BuildHasherDefault;
+use std::hash::{BuildHasherDefault, Hash};
 
 pub type HashMapFx<K, V> = HashMap<K, V, BuildHasherDefault<FxHasher>>;
 
@@ -326,7 +326,10 @@ pub fn sdpkpp_union_lcskpp_path(
 /// FMD index to generate the matches. Note that this method is mainly for
 /// demonstration & testing purposes.  For aligning many query sequences
 /// against the same reference, you should reuse the QGramIndex of the reference.
-pub fn find_kmer_matches(seq1: &[u8], seq2: &[u8], k: usize) -> Vec<(u32, u32)> {
+pub fn find_kmer_matches<T>(seq1: &[T], seq2: &[T], k: usize) -> Vec<(u32, u32)>
+where
+    T: Eq + Hash,
+{
     if seq1.len() < seq2.len() {
         let set = hash_kmers(seq1, k);
         find_kmer_matches_seq1_hashed(&set, seq2, k)
@@ -339,9 +342,12 @@ pub fn find_kmer_matches(seq1: &[u8], seq2: &[u8], k: usize) -> Vec<(u32, u32)> 
 /// Creates a HashMap containing all the k-mers in the sequence. FxHasher is used
 /// as the hash function instead of the inbuilt one. A good rolling hash function
 /// should speed up the code.
-pub fn hash_kmers(seq: &[u8], k: usize) -> HashMapFx<&[u8], Vec<u32>> {
+pub fn hash_kmers<T>(seq: &[T], k: usize) -> HashMapFx<&[T], Vec<u32>>
+where
+    T: Eq + Hash,
+{
     let slc = seq;
-    let mut set: HashMapFx<&[u8], Vec<u32>> = HashMapFx::default();
+    let mut set: HashMapFx<&[T], Vec<u32>> = HashMapFx::default();
     for i in 0..(slc.len() + 1).saturating_sub(k) {
         set.entry(&slc[i..i + k]).or_default().push(i as u32);
     }
@@ -350,11 +356,14 @@ pub fn hash_kmers(seq: &[u8], k: usize) -> HashMapFx<&[u8], Vec<u32>> {
 
 // Find all matches of length k between two strings where the first string is
 // already hashed by using the function sparse::hash_kmers
-pub fn find_kmer_matches_seq1_hashed(
-    seq1_set: &HashMapFx<&[u8], Vec<u32>>,
-    seq2: &[u8],
+pub fn find_kmer_matches_seq1_hashed<T>(
+    seq1_set: &HashMapFx<&[T], Vec<u32>>,
+    seq2: &[T],
     k: usize,
-) -> Vec<(u32, u32)> {
+) -> Vec<(u32, u32)>
+where
+    T: Eq + Hash,
+{
     let mut matches = Vec::new();
 
     for i in 0..(seq2.len() + 1).saturating_sub(k) {
@@ -372,11 +381,14 @@ pub fn find_kmer_matches_seq1_hashed(
 
 // Find all matches of length k between two strings where the second string is
 // already hashed by using the function sparse::hash_kmers
-pub fn find_kmer_matches_seq2_hashed(
-    seq1: &[u8],
-    seq2_set: &HashMapFx<&[u8], Vec<u32>>,
+pub fn find_kmer_matches_seq2_hashed<T>(
+    seq1: &[T],
+    seq2_set: &HashMapFx<&[T], Vec<u32>>,
     k: usize,
-) -> Vec<(u32, u32)> {
+) -> Vec<(u32, u32)>
+where
+    T: Eq + Hash,
+{
     let mut matches = Vec::new();
 
     for i in 0..(seq1.len() + 1).saturating_sub(k) {
@@ -393,13 +405,16 @@ pub fn find_kmer_matches_seq2_hashed(
     matches
 }
 
-pub fn expand_kmer_matches(
-    seq1: &[u8],
-    seq2: &[u8],
+pub fn expand_kmer_matches<T>(
+    seq1: &[T],
+    seq2: &[T],
     k: usize,
     sorted_matches: &[(u32, u32)],
     allowed_mismatches: usize,
-) -> Vec<(u32, u32)> {
+) -> Vec<(u32, u32)>
+where
+    T: Eq,
+{
     // incoming matches must be sorted.
     for i in 1..sorted_matches.len() {
         assert!(sorted_matches[i - 1] < sorted_matches[i]);
@@ -489,6 +504,8 @@ pub fn expand_kmer_matches(
 
 #[cfg(test)]
 mod sparse_alignment {
+    use std::hash::Hash;
+
     use super::find_kmer_matches;
 
     #[test]
@@ -519,7 +536,10 @@ mod sparse_alignment {
         assert_eq!(res.score, 14);
     }
 
-    pub fn strict_compare_lcskpp_sdpkpp(s1: &[u8], s2: &[u8]) {
+    pub fn strict_compare_lcskpp_sdpkpp<T>(s1: &[T], s2: &[T])
+    where
+        T: Eq + Hash,
+    {
         let k = 8;
         let matches = super::find_kmer_matches(s1, s2, k);
         let res1 = super::lcskpp(&matches, k);

@@ -84,11 +84,11 @@ fn lookup(a: u8) -> usize {
 ///
 /// ```
 /// use bio::scores::blosum62;
-/// assert_eq!(blosum62(b'H', b'A'), -2);
+/// assert_eq!(blosum62(&b'H', &b'A'), -2);
 /// ```
-pub fn blosum62(a: u8, b: u8) -> i32 {
-    let a = lookup(a);
-    let b = lookup(b);
+pub fn blosum62(a: &u8, b: &u8) -> i32 {
+    let a = lookup(*a);
+    let b = lookup(*b);
 
     MAT[(a, b)]
 }
@@ -99,17 +99,17 @@ mod tests {
 
     #[test]
     fn test_blosum62() {
-        let score1 = blosum62(b'A', b'A');
+        let score1 = blosum62(&b'A', &b'A');
         assert_eq!(score1, 4);
-        let score2 = blosum62(b'O', b'*');
+        let score2 = blosum62(&b'O', &b'*');
         assert_eq!(score2, -4);
-        let score3 = blosum62(b'A', b'*');
+        let score3 = blosum62(&b'A', &b'*');
         assert_eq!(score3, -4);
-        let score4 = blosum62(b'*', b'*');
+        let score4 = blosum62(&b'*', &b'*');
         assert_eq!(score4, 1);
-        let score5 = blosum62(b'X', b'X');
+        let score5 = blosum62(&b'X', &b'X');
         assert_eq!(score5, -1);
-        let score6 = blosum62(b'X', b'Z');
+        let score6 = blosum62(&b'X', &b'Z');
         assert_eq!(score6, -1);
     }
 }

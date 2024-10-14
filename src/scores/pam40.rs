@@ -84,11 +84,11 @@ fn lookup(a: u8) -> usize {
 ///
 /// ```
 /// use bio::scores::pam40;
-/// assert_eq!(pam40(b'H', b'A'), -6);
+/// assert_eq!(pam40(&b'H', &b'A'), -6);
 /// ```
-pub fn pam40(a: u8, b: u8) -> i32 {
-    let a = lookup(a);
-    let b = lookup(b);
+pub fn pam40(a: &u8, b: &u8) -> i32 {
+    let a = lookup(*a);
+    let b = lookup(*b);
 
     MAT[(a, b)]
 }
@@ -99,17 +99,17 @@ mod tests {
 
     #[test]
     fn test_pam40() {
-        let score1 = pam40(b'A', b'A');
+        let score1 = pam40(&b'A', &b'A');
         assert_eq!(score1, 6);
-        let score2 = pam40(b'*', b'*');
+        let score2 = pam40(&b'*', &b'*');
         assert_eq!(score2, 1);
-        let score3 = pam40(b'A', b'*');
+        let score3 = pam40(&b'A', &b'*');
         assert_eq!(score3, -15);
-        let score4 = pam40(b'*', b'*');
+        let score4 = pam40(&b'*', &b'*');
         assert_eq!(score4, 1);
-        let score5 = pam40(b'X', b'X');
+        let score5 = pam40(&b'X', &b'X');
         assert_eq!(score5, -4);
-        let score6 = pam40(b'X', b'Z');
+        let score6 = pam40(&b'X', &b'Z');
         assert_eq!(score6, -4);
     }
 }

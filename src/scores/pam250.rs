@@ -86,11 +86,11 @@ fn lookup(a: u8) -> usize {
 ///
 /// ```
 /// use bio::scores::pam250;
-/// assert_eq!(pam250(b'H', b'A'), -1);
+/// assert_eq!(pam250(&b'H', &b'A'), -1);
 /// ```
-pub fn pam250(a: u8, b: u8) -> i32 {
-    let a = lookup(a);
-    let b = lookup(b);
+pub fn pam250(a: &u8, b: &u8) -> i32 {
+    let a = lookup(*a);
+    let b = lookup(*b);
 
     MAT[(a, b)]
 }
@@ -101,17 +101,17 @@ mod tests {
 
     #[test]
     fn test_pam250() {
-        let score1 = pam250(b'A', b'A');
+        let score1 = pam250(&b'A', &b'A');
         assert_eq!(score1, 2);
-        let score2 = pam250(b'*', b'*');
+        let score2 = pam250(&b'*', &b'*');
         assert_eq!(score2, 1);
-        let score3 = pam250(b'A', b'*');
+        let score3 = pam250(&b'A', &b'*');
         assert_eq!(score3, -8);
-        let score4 = pam250(b'*', b'*');
+        let score4 = pam250(&b'*', &b'*');
         assert_eq!(score4, 1);
-        let score5 = pam250(b'X', b'X');
+        let score5 = pam250(&b'X', &b'X');
         assert_eq!(score5, -1);
-        let score6 = pam250(b'X', b'Z');
+        let score6 = pam250(&b'X', &b'Z');
         assert_eq!(score6, -1);
     }
 }

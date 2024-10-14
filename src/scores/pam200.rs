@@ -86,11 +86,11 @@ fn lookup(a: u8) -> usize {
 ///
 /// ```
 /// use bio::scores::pam200;
-/// assert_eq!(pam200(b'H', b'A'), -2);
+/// assert_eq!(pam200(&b'H', &b'A'), -2);
 /// ```
-pub fn pam200(a: u8, b: u8) -> i32 {
-    let a = lookup(a);
-    let b = lookup(b);
+pub fn pam200(a: &u8, b: &u8) -> i32 {
+    let a = lookup(*a);
+    let b = lookup(*b);
 
     MAT[(a, b)]
 }
@@ -101,17 +101,17 @@ mod tests {
 
     #[test]
     fn test_pam200() {
-        let score1 = pam200(b'A', b'A');
+        let score1 = pam200(&b'A', &b'A');
         assert_eq!(score1, 3);
-        let score2 = pam200(b'*', b'*');
+        let score2 = pam200(&b'*', &b'*');
         assert_eq!(score2, 1);
-        let score3 = pam200(b'A', b'*');
+        let score3 = pam200(&b'A', &b'*');
         assert_eq!(score3, -9);
-        let score4 = pam200(b'Y', b'Z');
+        let score4 = pam200(&b'Y', &b'Z');
         assert_eq!(score4, -5);
-        let score5 = pam200(b'X', b'X');
+        let score5 = pam200(&b'X', &b'X');
         assert_eq!(score5, -1);
-        let score6 = pam200(b'X', b'Z');
+        let score6 = pam200(&b'X', &b'Z');
         assert_eq!(score6, -1);
     }
 }

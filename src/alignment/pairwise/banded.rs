@@ -23,10 +23,11 @@
 //! use bio::alignment::sparse::hash_kmers;
 //! use bio::alignment::AlignmentOperation::*;
 //! use std::iter::repeat;
+//! use std::marker::PhantomData;
 //!
 //! let x = b"AGCACACGTGTGCGCTATACAGTAAGTAGTAGTACACGTGTCACAGTTGTACTAGCATGAC";
 //! let y = b"AGCACACGTGTGCGCTATACAGTACACGTGTCACAGTTGTACTAGCATGAC";
-//! let score = |a: u8, b: u8| if a == b { 1i32 } else { -1i32 };
+//! let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 };
 //! let k = 8; // kmer match length
 //! let w = 6; // Window size for creating the band
 //! let mut aligner = Aligner::new(-5, -1, score, k, w);
@@ -55,9 +56,10 @@
 //! // the rest of the string in the alignment
 //!
 //! let scoring = Scoring {
+//!     _item: PhantomData,
 //!     gap_open: -5,
 //!     gap_extend: -1,
-//!     match_fn: |a: u8, b: u8| if a == b { 1i32 } else { -3i32 },
+//!     match_fn: |a: &u8, b: &u8| if *a == *b { 1i32 } else { -3i32 },
 //!     match_scores: Some((1, -3)),
 //!     xclip_prefix: -10,
 //!     xclip_suffix: MIN_SCORE,
@@ -81,8 +83,8 @@
 //! ```
 
 use crate::alignment::{Alignment, AlignmentOperation};
-use crate::utils::TextSlice;
 use std::cmp::{max, min, Ordering};
+use std::hash::Hash;
 use std::i32;
 use std::ops::Range;
 
@@ -109,7 +111,7 @@ const DEFAULT_MATCH_SCORE: i32 = 2;
 /// empty alignment
 #[allow(non_snake_case)]
 #[derive(Default, Clone, Eq, PartialEq, Hash, Debug, Serialize, Deserialize)]
-pub struct Aligner<F: MatchFunc> {
+pub struct Aligner<F: MatchFunc<T>, T = u8> {
     S: [Vec<i32>; 2],
     I: [Vec<i32>; 2],
     D: [Vec<i32>; 2],
@@ -117,7 +119,7 @@ pub struct Aligner<F: MatchFunc> {
     Ly: Vec<usize>,
     Sn: Vec<i32>,
     traceback: Traceback,
-    scoring: Scoring<F>,
+    scoring: Scoring<F, T>,
 
     band: Band,
     k: usize,
@@ -126,7 +128,7 @@ pub struct Aligner<F: MatchFunc> {
 
 const DEFAULT_ALIGNER_CAPACITY: usize = 200;
 
-impl<F: MatchFunc> Aligner<F> {
+impl<F: MatchFunc<T>, T> Aligner<F, T> {
     /// Create new aligner instance with given gap open and gap extend penalties
     /// and the score function.
     ///
@@ -198,7 +200,7 @@ impl<F: MatchFunc> Aligner<F> {
     pub fn with_capacity_and_scoring(
         m: usize,
         n: usize,
-        scoring: Scoring<F>,
+        scoring: Scoring<F, T>,
         k: usize,
         w: usize,
     ) -> Self {
@@ -246,7 +248,7 @@ impl<F: MatchFunc> Aligner<F> {
     /// * `scoring` - the scoring struct
     /// * `k` - kmer length used in constructing the band
     /// * `w` - width of the band
-    pub fn with_scoring(scoring: Scoring<F>, k: usize, w: usize) -> Self {
+    pub fn with_scoring(scoring: Scoring<F, T>, k: usize, w: usize) -> Self {
         Aligner::with_capacity_and_scoring(
             DEFAULT_ALIGNER_CAPACITY,
             DEFAULT_ALIGNER_CAPACITY,
@@ -259,7 +261,7 @@ impl<F: MatchFunc> Aligner<F> {
     /// Return a mutable reference to scoring. Useful if you want to have a
     /// single aligner object but want to modify the scores within it for
     /// different cases
-    pub fn get_mut_scoring(&mut self) -> &mut Scoring<F> {
+    pub fn get_mut_scoring(&mut self) -> &mut Scoring<F, T> {
         &mut self.scoring
     }
 
@@ -269,7 +271,10 @@ impl<F: MatchFunc> Aligner<F> {
     ///
     /// * `x` - Textslice
     /// * `y` - Textslice
-    pub fn custom(&mut self, x: TextSlice<'_>, y: TextSlice<'_>) -> Alignment {
+    pub fn custom(&mut self, x: &[T], y: &[T]) -> Alignment
+    where
+        T: Eq + Hash,
+    {
         self.band = Band::create(x, y, self.k, self.w, &self.scoring);
         self.compute_alignment(x, y)
     }
@@ -283,10 +288,13 @@ impl<F: MatchFunc> Aligner<F> {
     /// * `y` - Textslice
     pub fn custom_with_prehash(
         &mut self,
-        x: TextSlice<'_>,
-        y: TextSlice<'_>,
-        y_kmer_hash: &HashMapFx<&[u8], Vec<u32>>,
-    ) -> Alignment {
+        x: &[T],
+        y: &[T],
+        y_kmer_hash: &HashMapFx<&[T], Vec<u32>>,
+    ) -> Alignment
+    where
+        T: Eq + Hash,
+    {
         self.band = Band::create_with_prehash(x, y, self.k, self.w, &self.scoring, y_kmer_hash);
         self.compute_alignment(x, y)
     }
@@ -300,12 +308,10 @@ impl<F: MatchFunc> Aligner<F> {
     /// * `x` - Textslice
     /// * `y` - Textslice
     /// * `matches` - Vector of kmer matching pairs (xpos, ypos)
-    pub fn custom_with_matches(
-        &mut self,
-        x: TextSlice<'_>,
-        y: TextSlice<'_>,
-        matches: &[(u32, u32)],
-    ) -> Alignment {
+    pub fn custom_with_matches(&mut self, x: &[T], y: &[T], matches: &[(u32, u32)]) -> Alignment
+    where
+        T: Eq,
+    {
         self.band = Band::create_with_matches(x, y, self.k, self.w, &self.scoring, matches);
         self.compute_alignment(x, y)
     }
@@ -327,12 +333,15 @@ impl<F: MatchFunc> Aligner<F> {
     /// * `use_lcskpp_union` - Extend the results from sdpkpp using lcskpp
     pub fn custom_with_expanded_matches(
         &mut self,
-        x: TextSlice<'_>,
-        y: TextSlice<'_>,
+        x: &[T],
+        y: &[T],
         matches: Vec<(u32, u32)>,
         allowed_mismatches: Option<usize>,
         use_lcskpp_union: bool,
-    ) -> Alignment {
+    ) -> Alignment
+    where
+        T: Eq,
+    {
         let expanded_matches = match allowed_mismatches {
             Some(m) => sparse::expand_kmer_matches(x, y, self.k, &matches, m),
             None => matches,
@@ -380,11 +389,14 @@ impl<F: MatchFunc> Aligner<F> {
     /// which defines a path. The validity of the path is not checked.
     pub fn custom_with_match_path(
         &mut self,
-        x: TextSlice,
-        y: TextSlice,
+        x: &[T],
+        y: &[T],
         matches: &[(u32, u32)],
         path: &[usize],
-    ) -> Alignment {
+    ) -> Alignment
+    where
+        T: Eq,
+    {
         self.band =
             Band::create_from_match_path(x, y, self.k, self.w, &self.scoring, path, matches);
         self.compute_alignment(x, y)
@@ -393,7 +405,10 @@ impl<F: MatchFunc> Aligner<F> {
     // Computes the alignment. The band needs to be populated prior
     // to calling this function
     #[inline(never)]
-    fn compute_alignment(&mut self, x: TextSlice<'_>, y: TextSlice<'_>) -> Alignment {
+    fn compute_alignment(&mut self, x: &[T], y: &[T]) -> Alignment
+    where
+        T: Eq,
+    {
         if self.band.num_cells() > MAX_CELLS {
             // Too many cells in the band. Return an empty alignment
             return Alignment {
@@ -552,7 +567,7 @@ impl<F: MatchFunc> Aligner<F> {
             }
             self.S[curr][m] = MIN_SCORE;
 
-            let q = y[j - 1];
+            let q = &y[j - 1];
             let xclip_score = self.scoring.xclip_prefix
                 + max(
                     if j == n {
@@ -564,7 +579,7 @@ impl<F: MatchFunc> Aligner<F> {
                 );
 
             for i in max(1, i_start)..i_end {
-                let p = x[i - 1];
+                let p = &x[i - 1];
                 let mut tb = TracebackCell::new();
 
                 let m_score = self.S[prev][i - 1] + self.scoring.match_fn.score(p, q);
@@ -862,7 +877,10 @@ impl<F: MatchFunc> Aligner<F> {
     }
 
     /// Calculate global alignment of x against y.
-    pub fn global(&mut self, x: TextSlice<'_>, y: TextSlice<'_>) -> Alignment {
+    pub fn global(&mut self, x: &[T], y: &[T]) -> Alignment
+    where
+        T: Eq + Hash,
+    {
         // Store the current clip penalties
         let clip_penalties = [
             self.scoring.xclip_prefix,
@@ -891,7 +909,10 @@ impl<F: MatchFunc> Aligner<F> {
     }
 
     /// Calculate semiglobal alignment of x against y (x is global, y is local).
-    pub fn semiglobal(&mut self, x: TextSlice<'_>, y: TextSlice<'_>) -> Alignment {
+    pub fn semiglobal(&mut self, x: &[T], y: &[T]) -> Alignment
+    where
+        T: Eq + Hash,
+    {
         // Store the current clip penalties
         let clip_penalties = [
             self.scoring.xclip_prefix,
@@ -930,10 +951,13 @@ impl<F: MatchFunc> Aligner<F> {
     /// alignment computation.
     pub fn semiglobal_with_prehash(
         &mut self,
-        x: TextSlice<'_>,
-        y: TextSlice<'_>,
-        y_kmer_hash: &HashMapFx<&[u8], Vec<u32>>,
-    ) -> Alignment {
+        x: &[T],
+        y: &[T],
+        y_kmer_hash: &HashMapFx<&[T], Vec<u32>>,
+    ) -> Alignment
+    where
+        T: Eq + Hash,
+    {
         // Store the current clip penalties
         let clip_penalties = [
             self.scoring.xclip_prefix,
@@ -965,7 +989,10 @@ impl<F: MatchFunc> Aligner<F> {
     }
 
     /// Calculate local alignment of x against y.
-    pub fn local(&mut self, x: TextSlice<'_>, y: TextSlice<'_>) -> Alignment {
+    pub fn local(&mut self, x: &[T], y: &[T]) -> Alignment
+    where
+        T: Eq + Hash,
+    {
         // Store the current clip penalties
         let clip_penalties = [
             self.scoring.xclip_prefix,
@@ -1140,13 +1167,13 @@ impl Band {
     // start - the index of the first matching kmer in LCSk++
     // end - the index of the last matching kmer in LCSk++
     //
-    fn set_boundaries<F: MatchFunc>(
+    fn set_boundaries<F: MatchFunc<T>, T>(
         &mut self,
         start: (u32, u32),
         end: (u32, u32),
         k: usize,
         w: usize,
-        scoring: &Scoring<F>,
+        scoring: &Scoring<F, T>,
     ) {
         let lazy_extend: usize = 2 * k;
 
@@ -1268,37 +1295,46 @@ impl Band {
         }
     }
 
-    fn create<F: MatchFunc>(
-        x: TextSlice<'_>,
-        y: TextSlice<'_>,
+    fn create<F: MatchFunc<T>, T>(
+        x: &[T],
+        y: &[T],
         k: usize,
         w: usize,
-        scoring: &Scoring<F>,
-    ) -> Band {
+        scoring: &Scoring<F, T>,
+    ) -> Band
+    where
+        T: Eq + Hash,
+    {
         let matches = sparse::find_kmer_matches(x, y, k);
         Band::create_with_matches(x, y, k, w, scoring, &matches)
     }
 
-    fn create_with_prehash<F: MatchFunc>(
-        x: TextSlice<'_>,
-        y: TextSlice<'_>,
+    fn create_with_prehash<F: MatchFunc<T>, T>(
+        x: &[T],
+        y: &[T],
         k: usize,
         w: usize,
-        scoring: &Scoring<F>,
-        y_kmer_hash: &HashMapFx<&[u8], Vec<u32>>,
-    ) -> Band {
+        scoring: &Scoring<F, T>,
+        y_kmer_hash: &HashMapFx<&[T], Vec<u32>>,
+    ) -> Band
+    where
+        T: Eq + Hash,
+    {
         let matches = sparse::find_kmer_matches_seq2_hashed(x, y_kmer_hash, k);
         Band::create_with_matches(x, y, k, w, scoring, &matches)
     }
 
-    fn create_with_matches<F: MatchFunc>(
-        x: TextSlice<'_>,
-        y: TextSlice<'_>,
+    fn create_with_matches<F: MatchFunc<T>, T>(
+        x: &[T],
+        y: &[T],
         k: usize,
         w: usize,
-        scoring: &Scoring<F>,
+        scoring: &Scoring<F, T>,
         matches: &[(u32, u32)],
-    ) -> Band {
+    ) -> Band
+    where
+        T: Eq,
+    {
         if matches.is_empty() {
             let mut band = Band::new(x.len(), y.len());
             band.full_matrix();
@@ -1320,15 +1356,18 @@ impl Band {
         Band::create_from_match_path(x, y, k, w, scoring, &res.path, matches)
     }
 
-    fn create_from_match_path<F: MatchFunc>(
-        x: TextSlice<'_>,
-        y: TextSlice<'_>,
+    fn create_from_match_path<F: MatchFunc<T>, T>(
+        x: &[T],
+        y: &[T],
         k: usize,
         w: usize,
-        scoring: &Scoring<F>,
+        scoring: &Scoring<F, T>,
         path: &[usize],
         matches: &[(u32, u32)],
-    ) -> Band {
+    ) -> Band
+    where
+        T: Eq,
+    {
         let mut band = Band::new(x.len(), y.len());
 
         if matches.is_empty() {
@@ -1413,7 +1452,7 @@ mod banded {
 
     // Check that the banded alignment is equivalent to the exhaustive SW alignment
     fn compare_to_full_alignment_local(x: TextSlice<'_>, y: TextSlice<'_>) {
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -1i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 };
 
         let mut banded_aligner =
             banded::Aligner::with_capacity(x.len(), y.len(), -5, -1, &score, 10, 10);
@@ -1427,7 +1466,7 @@ mod banded {
     }
 
     fn compare_to_full_alignment_global(x: TextSlice<'_>, y: TextSlice<'_>) {
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -1i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 };
 
         let mut banded_aligner =
             banded::Aligner::with_capacity(x.len(), y.len(), -5, -1, &score, 10, 10);
@@ -1441,7 +1480,7 @@ mod banded {
     }
 
     fn compare_to_full_alignment_semiglobal(x: TextSlice<'_>, y: TextSlice<'_>) {
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -1i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 };
 
         let mut banded_aligner =
             banded::Aligner::with_capacity(x.len(), y.len(), -5, -1, &score, 10, 10);
@@ -1760,7 +1799,7 @@ mod banded {
     fn test_semiglobal() {
         let x = b"ACCGTGGAT";
         let y = b"AAAAACCGTTGAT";
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -1i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 };
         let mut aligner = banded::Aligner::with_capacity(x.len(), y.len(), -5, -1, &score, 10, 10);
         let alignment = aligner.semiglobal(x, y);
         assert_eq!(alignment.ystart, 4);
@@ -1776,7 +1815,7 @@ mod banded {
     fn test_semiglobal_gap_open_lt_mismatch() {
         let x = b"ACCGTGGAT";
         let y = b"AAAAACCGTTGAT";
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -5i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -5i32 };
         let mut aligner = banded::Aligner::with_capacity(x.len(), y.len(), -1, -1, &score, 10, 10);
         let alignment = aligner.semiglobal(x, y);
         assert_eq!(alignment.ystart, 4);
@@ -1791,7 +1830,7 @@ mod banded {
     fn test_global_affine_ins() {
         let x = b"ACGAGAACA";
         let y = b"ACGACA";
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -3i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -3i32 };
         let mut aligner = banded::Aligner::with_capacity(x.len(), y.len(), -5, -1, &score, 10, 10);
         let alignment = aligner.global(x, y);
 
@@ -1806,7 +1845,7 @@ mod banded {
     fn test_local_empty() {
         let x = b"NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN";
         let y = b"AACGTACGATACGTGGGTTGTCACACGTGTCGCGCGGCAACACATCAGACTCTAACAGCATCATCAGCACGTGACA";
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -3i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -3i32 };
         let mut aligner = banded::Aligner::with_capacity(x.len(), y.len(), -5, -1, &score, 10, 10);
         let alignment = aligner.local(x, y);
 
@@ -1819,7 +1858,7 @@ mod banded {
     fn test_global_affine_ins2() {
         let x = b"AGATAGATAGATAGGGAGTTGTGTAGATGATCCACAGT";
         let y = b"AGATAGATAGATGTAGATGATCCACAGT";
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -1i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 };
         let mut aligner = banded::Aligner::with_capacity(x.len(), y.len(), -5, -1, &score, 10, 10);
         let alignment = aligner.global(x, y);
 
@@ -1837,7 +1876,7 @@ mod banded {
     fn test_local_affine_ins2() {
         let x = b"ACGTATCATAGATAGATAGGGTTGTGTAGATGATCCACAG";
         let y = b"CGTATCATAGATAGATGTAGATGATCCACAGT";
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -1i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 };
         let mut aligner = banded::Aligner::with_capacity(x.len(), y.len(), -5, -1, &score, 10, 10);
         let alignment = aligner.local(x, y);
         assert_eq!(alignment.xstart, 1);
@@ -1848,7 +1887,7 @@ mod banded {
     fn test_local() {
         let x = b"ACCGTGGAT";
         let y = b"AAAAACCGTTGAT";
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -1i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 };
         let mut aligner = banded::Aligner::with_capacity(x.len(), y.len(), -5, -1, &score, 10, 10);
         let alignment = aligner.local(x, y);
         assert_eq!(alignment.ystart, 4);
@@ -1863,7 +1902,7 @@ mod banded {
     fn test_global() {
         let x = b"ACCGTGGAT";
         let y = b"AAAAACCGTTGAT";
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -1i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 };
         let mut aligner = banded::Aligner::with_capacity(x.len(), y.len(), -5, -1, &score, 10, 10);
         let alignment = aligner.global(x, y);
 
@@ -1893,7 +1932,7 @@ mod banded {
     fn test_issue11() {
         let y = b"TACC"; //GTGGAC";
         let x = b"AAAAACC"; //GTTGACGCAA";
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -1i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 };
         let mut aligner = banded::Aligner::with_capacity(x.len(), y.len(), -5, -1, &score, 10, 10);
         let alignment = aligner.global(x, y);
         assert_eq!(alignment.ystart, 0);
@@ -1908,7 +1947,7 @@ mod banded {
     fn test_issue12_1() {
         let x = b"CCGGCA";
         let y = b"ACCGTTGACGC";
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -1i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 };
         let mut aligner = banded::Aligner::with_capacity(x.len(), y.len(), -5, -1, &score, 10, 10);
         let alignment = aligner.semiglobal(x, y);
         assert_eq!(alignment.xstart, 0);
@@ -1923,7 +1962,7 @@ mod banded {
     fn test_issue12_2() {
         let y = b"CCGGCA";
         let x = b"ACCGTTGACGC";
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -1i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 };
         let mut aligner = banded::Aligner::with_capacity(x.len(), y.len(), -5, -1, &score, 10, 10);
         let alignment = aligner.semiglobal(x, y);
         assert_eq!(alignment.xstart, 0);
@@ -1939,7 +1978,7 @@ mod banded {
     fn test_issue12_3() {
         let y = b"CCGTCCGGCAA";
         let x = b"AAAAACCGTTGACGCAA";
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -1i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 };
         let mut aligner = banded::Aligner::with_capacity(x.len(), y.len(), -5, -1, &score, 10, 10);
         let alignment = aligner.semiglobal(x, y);
 
@@ -1966,7 +2005,7 @@ mod banded {
     fn test_left_aligned_del() {
         let x = b"GTGCATCATGTG";
         let y = b"GTGCATCATCATGTG";
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -1i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 };
         let mut aligner = banded::Aligner::with_capacity(x.len(), y.len(), -5, -1, &score, 10, 10);
         let alignment = aligner.global(x, y);
         println!("\naln:\n{}", alignment.pretty(x, y, 80));
@@ -1989,7 +2028,7 @@ mod banded {
         let x = b"AACCACGTACGTGGGGGGA";
         let y = b"CCACGTACGT";
 
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -1i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 };
         let mut aligner = banded::Aligner::with_capacity(x.len(), y.len(), -5, -1, &score, 10, 10);
         let alignment = aligner.global(x, y);
 
@@ -2012,7 +2051,7 @@ mod banded {
     fn test_left_aligned_ins() {
         let x = b"GTGCATCATCATGTG";
         let y = b"GTGCATCATGTG";
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -1i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 };
         let mut aligner = banded::Aligner::with_capacity(x.len(), y.len(), -5, -1, &score, 10, 10);
         let alignment = aligner.global(x, y);
         println!("\naln:\n{}", alignment.pretty(x, y, 80));
@@ -2032,7 +2071,7 @@ mod banded {
     fn test_aligner_new() {
         let x = b"ACCGTGGAT";
         let y = b"AAAAACCGTTGAT";
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -1i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 };
         let mut aligner = banded::Aligner::new(-5, -1, &score, 10, 10);
 
         let alignment = aligner.semiglobal(x, y);
@@ -2065,7 +2104,7 @@ mod banded {
         let x = b"GAAAACCGTTGAT";
         let y = b"ACCGTGGATGGG";
 
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -1i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 };
         let mut aligner = banded::Aligner::new(-5, -1, &score, 10, 10);
         let alignment = aligner.semiglobal(x, y);
 
@@ -2080,7 +2119,7 @@ mod banded {
         let x = b"TTTT";
         let y = b"AAAA";
 
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -3i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -3i32 };
         let mut aligner = banded::Aligner::new(-5, -1, &score, 10, 10);
         let alignment = aligner.semiglobal(x, y);
 
@@ -2092,7 +2131,7 @@ mod banded {
         let x = b"GGGGG";
         let y = b"GGTAGGG";
 
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -3i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -3i32 };
         let mut aligner = banded::Aligner::new(-5, -1, &score, 10, 10);
         let alignment = aligner.semiglobal(x, y);
 
@@ -2107,7 +2146,7 @@ mod banded {
         let x = b"GGGGGGATG";
         let y = b"ATG";
 
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -1i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 };
         let scoring = Scoring::new(-5, -1, &score).xclip(-5);
 
         let mut aligner = banded::Aligner::with_scoring(scoring, 10, 10);
@@ -2121,7 +2160,7 @@ mod banded {
         let y = b"GGGGGGATG";
         let x = b"ATG";
 
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -1i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 };
         let scoring = Scoring::new(-5, -1, &score).yclip(-5);
 
         let mut aligner = banded::Aligner::with_scoring(scoring, 10, 10);
@@ -2135,7 +2174,7 @@ mod banded {
         let x = b"GAAAA";
         let y = b"CG";
 
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -1i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 };
         let scoring = Scoring::new(-5, -1, &score).xclip(-5).yclip(0);
 
         let mut aligner = banded::Aligner::with_scoring(scoring, 10, 10);
@@ -2149,7 +2188,7 @@ mod banded {
         let y = b"GAAAA";
         let x = b"CG";
 
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -3i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -3i32 };
         let scoring = Scoring::new(-5, -1, &score).yclip(-5).xclip(0);
 
         let mut aligner = banded::Aligner::with_scoring(scoring, 10, 10);
@@ -2163,7 +2202,7 @@ mod banded {
         let x = b"TTTTTGGGGGGATGGCCCCCCTTTTTTTTTTGGGAAAAAAAAAGGGGGG";
         let y = b"GGGGGGATTTCCCCCCCCCTTTTTTTTTTAAAAAAAAA";
 
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -3i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -3i32 };
         let scoring = Scoring::new(-5, -1, &score).xclip(-5).yclip(0);
 
         let mut aligner = banded::Aligner::with_scoring(scoring, 10, 10);

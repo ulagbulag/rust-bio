@@ -26,7 +26,7 @@
 //! let y = b"AABBBAA";
 //! let z = b"AABCBAA";
 //!
-//! let scoring = Scoring::new(-1, 0, |a: u8, b: u8| if a == b { 1i32 } else { -1i32 });
+//! let scoring = Scoring::new(-1, 0, |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 });
 //! let mut aligner = Aligner::new(scoring, x);
 //! // z differs from x in 3 locations
 //! assert_eq!(aligner.global(z).alignment().score, 1);
@@ -47,7 +47,19 @@ use petgraph::visit::Topo;
 use petgraph::{Directed, Graph, Incoming};
 
 pub const MIN_SCORE: i32 = -858_993_459; // negative infinity; see alignment/pairwise/mod.rs
-pub type POAGraph = Graph<u8, i32, Directed, usize>;
+pub type POAGraph<T = u8> = Graph<T, i32, Directed, usize>;
+
+/// Trait required to generalize the ambiguous code
+pub trait PoaItem {
+    fn is_ambiguous(&self) -> bool;
+}
+
+impl PoaItem for u8 {
+    #[inline]
+    fn is_ambiguous(&self) -> bool {
+        *self == b'X'
+    }
+}
 
 // Unlike with a total order we may have arbitrary successors in the
 // traceback matrix. I have not yet figured out what the best level of
@@ -379,15 +391,18 @@ impl Traceback {
 ///
 /// Uses consuming builder pattern for constructing partial order alignments with method chaining
 #[derive(Default, Clone, Debug)]
-pub struct Aligner<F: MatchFunc> {
+pub struct Aligner<F: MatchFunc<T>, T = u8> {
     traceback: Traceback,
-    query: Vec<u8>,
-    poa: Poa<F>,
+    query: Vec<T>,
+    poa: Poa<F, T>,
 }
 
-impl<F: MatchFunc> Aligner<F> {
+impl<F: MatchFunc<T>, T> Aligner<F, T> {
     /// Create new instance.
-    pub fn new(scoring: Scoring<F>, reference: TextSlice) -> Self {
+    pub fn new(scoring: Scoring<F, T>, reference: &[T]) -> Self
+    where
+        T: Clone,
+    {
         Aligner {
             traceback: Traceback::new(),
             query: reference.to_vec(),
@@ -396,7 +411,10 @@ impl<F: MatchFunc> Aligner<F> {
     }
 
     /// Add the alignment of the last query to the graph.
-    pub fn add_to_graph(&mut self) -> &mut Self {
+    pub fn add_to_graph(&mut self) -> &mut Self
+    where
+        T: Eq + Clone + PoaItem,
+    {
         let alignment = self.traceback.alignment();
         self.poa.add_alignment(&alignment, &self.query);
         self
@@ -408,7 +426,10 @@ impl<F: MatchFunc> Aligner<F> {
     }
 
     /// Globally align a given query against the graph.
-    pub fn global(&mut self, query: TextSlice) -> &mut Self {
+    pub fn global(&mut self, query: &[T]) -> &mut Self
+    where
+        T: Clone,
+    {
         // Store the current clip penalties
         let clip_penalties = [
             self.poa.scoring.xclip_prefix,
@@ -436,7 +457,10 @@ impl<F: MatchFunc> Aligner<F> {
     }
 
     /// Semi-globally align a given query against the graph.
-    pub fn semiglobal(&mut self, query: TextSlice) -> &mut Self {
+    pub fn semiglobal(&mut self, query: &[T]) -> &mut Self
+    where
+        T: Clone,
+    {
         // Store the current clip penalties
         let clip_penalties = [
             self.poa.scoring.xclip_prefix,
@@ -464,7 +488,10 @@ impl<F: MatchFunc> Aligner<F> {
     }
 
     /// Locally align a given query against the graph.
-    pub fn local(&mut self, query: TextSlice) -> &mut Self {
+    pub fn local(&mut self, query: &[T]) -> &mut Self
+    where
+        T: Clone,
+    {
         // Store the current clip penalties
         let clip_penalties = [
             self.poa.scoring.xclip_prefix,
@@ -492,7 +519,10 @@ impl<F: MatchFunc> Aligner<F> {
     }
 
     /// Custom align a given query against the graph with custom xclip and yclip penalties.
-    pub fn custom(&mut self, query: TextSlice) -> &mut Self {
+    pub fn custom(&mut self, query: &[T]) -> &mut Self
+    where
+        T: Clone,
+    {
         self.query = query.to_vec();
         self.traceback = self.poa.custom(query);
         self
@@ -500,19 +530,25 @@ impl<F: MatchFunc> Aligner<F> {
 
     /// Globally align a given query against the graph with a band around the previous
     /// optimal score for speed.
-    pub fn global_banded(&mut self, query: TextSlice, bandwidth: usize) -> &mut Self {
+    pub fn global_banded(&mut self, query: &[T], bandwidth: usize) -> &mut Self
+    where
+        T: Clone,
+    {
         self.query = query.to_vec();
         self.traceback = self.poa.global_banded(query, bandwidth);
         self
     }
 
     /// Return alignment graph.
-    pub fn graph(&self) -> &POAGraph {
+    pub fn graph(&self) -> &POAGraph<T> {
         &self.poa.graph
     }
     /// Return the consensus sequence generated from the POA graph.
-    pub fn consensus(&self) -> Vec<u8> {
-        let mut consensus: Vec<u8> = vec![];
+    pub fn consensus(&self) -> Vec<T>
+    where
+        T: Clone,
+    {
+        let mut consensus: Vec<T> = vec![];
         let max_index = self.poa.graph.node_count();
         let mut weight_score_next_vec: Vec<(i32, i32, usize)> = vec![(0, 0, 0); max_index + 1];
         let mut topo = Topo::new(&self.poa.graph);
@@ -543,7 +579,7 @@ impl<F: MatchFunc> Aligner<F> {
             .unwrap();
         // go through weight_score_next_vec appending to the consensus
         while pos != usize::MAX {
-            consensus.push(self.poa.graph.raw_nodes()[pos].weight);
+            consensus.push(self.poa.graph.raw_nodes()[pos].weight.clone());
             pos = weight_score_next_vec[pos].2;
         }
         consensus.reverse();
@@ -556,19 +592,19 @@ impl<F: MatchFunc> Aligner<F> {
 /// A directed acyclic graph datastructure that represents the topology of a
 /// traceback matrix.
 #[derive(Default, Clone, Debug)]
-pub struct Poa<F: MatchFunc> {
-    scoring: Scoring<F>,
-    pub graph: POAGraph,
+pub struct Poa<F: MatchFunc<T>, T = u8> {
+    scoring: Scoring<F, T>,
+    pub graph: POAGraph<T>,
 }
 
-impl<F: MatchFunc> Poa<F> {
+impl<F: MatchFunc<T>, T> Poa<F, T> {
     /// Create a new aligner instance from the directed acyclic graph of another.
     ///
     /// # Arguments
     ///
     /// * `scoring` - the score struct
     /// * `poa` - the partially ordered reference alignment
-    pub fn new(scoring: Scoring<F>, graph: POAGraph) -> Self {
+    pub fn new(scoring: Scoring<F, T>, graph: POAGraph<T>) -> Self {
         Poa { scoring, graph }
     }
 
@@ -578,13 +614,23 @@ impl<F: MatchFunc> Poa<F> {
     ///
     /// * `scoring` - the score struct
     /// * `reference` - a reference TextSlice to populate the initial reference graph
-    pub fn from_string(scoring: Scoring<F>, seq: TextSlice) -> Self {
-        let mut graph: Graph<u8, i32, Directed, usize> =
+    pub fn from_string(scoring: Scoring<F, T>, seq: &[T]) -> Self
+    where
+        T: Clone,
+    {
+        if seq.is_empty() {
+            return Poa {
+                scoring,
+                graph: Graph::default(),
+            };
+        }
+
+        let mut graph: Graph<T, i32, Directed, usize> =
             Graph::with_capacity(seq.len(), seq.len() - 1);
-        let mut prev: NodeIndex<usize> = graph.add_node(seq[0]);
+        let mut prev: NodeIndex<usize> = graph.add_node(seq[0].clone());
         let mut node: NodeIndex<usize>;
         for base in seq.iter().skip(1) {
-            node = graph.add_node(*base);
+            node = graph.add_node(base.clone());
             graph.add_edge(prev, node, 1);
             prev = node;
         }
@@ -595,7 +641,7 @@ impl<F: MatchFunc> Poa<F> {
     ///
     /// # Arguments
     /// * `query` - the query TextSlice to align against the internal graph member
-    pub fn custom(&self, query: TextSlice) -> Traceback {
+    pub fn custom(&self, query: &[T]) -> Traceback {
         assert!(self.graph.node_count() != 0);
         // dimensions of the traceback matrix
         let (m, n) = (self.graph.node_count(), query.len());
@@ -607,7 +653,7 @@ impl<F: MatchFunc> Poa<F> {
         let mut topo = Topo::new(&self.graph);
         while let Some(node) = topo.next(&self.graph) {
             // reference base and index
-            let r = self.graph.raw_nodes()[node.index()].weight; // reference base at previous index
+            let r = &self.graph.raw_nodes()[node.index()].weight; // reference base at previous index
             let i = node.index() + 1; // 0 index is for initialization so we start at 1
             traceback.last = node;
             // iterate over the predecessors of this node
@@ -628,7 +674,7 @@ impl<F: MatchFunc> Poa<F> {
                 let max_cell = if prevs.is_empty() {
                     TracebackCell {
                         score: traceback.get(0, j - 1).score
-                            + self.scoring.match_fn.score(r, *query_base),
+                            + self.scoring.match_fn.score(r, query_base),
                         op: AlignmentOperation::Match(None),
                     }
                 } else {
@@ -649,7 +695,7 @@ impl<F: MatchFunc> Poa<F> {
                             max(
                                 TracebackCell {
                                     score: traceback.get(i_p, j - 1).score
-                                        + self.scoring.match_fn.score(r, *query_base),
+                                        + self.scoring.match_fn.score(r, query_base),
                                     op: AlignmentOperation::Match(Some((i_p - 1, i - 1))),
                                 },
                                 TracebackCell {
@@ -714,7 +760,7 @@ impl<F: MatchFunc> Poa<F> {
     /// # Arguments
     /// * `query` - the query TextSlice to align against the internal graph member
     /// * `bandwidth` - width of band, if too small, alignment may be suboptimal
-    pub fn global_banded(&self, query: TextSlice, bandwidth: usize) -> Traceback {
+    pub fn global_banded(&self, query: &[T], bandwidth: usize) -> Traceback {
         assert!(self.graph.node_count() != 0);
 
         // dimensions of the traceback matrix
@@ -740,7 +786,7 @@ impl<F: MatchFunc> Poa<F> {
         let mut topo = Topo::new(&self.graph);
         while let Some(node) = topo.next(&self.graph) {
             // reference base and index
-            let r = self.graph.raw_nodes()[node.index()].weight; // reference base at previous index
+            let r = &self.graph.raw_nodes()[node.index()].weight; // reference base at previous index
             let i = node.index() + 1; // 0 index is for initialization so we start at 1
             traceback.last = node;
             // iterate over the predecessors of this node
@@ -768,7 +814,7 @@ impl<F: MatchFunc> Poa<F> {
                 let max_cell = if prevs.is_empty() {
                     TracebackCell {
                         score: traceback.get(0, j - 1).score
-                            + self.scoring.match_fn.score(r, *query_base),
+                            + self.scoring.match_fn.score(r, query_base),
                         op: AlignmentOperation::Match(None),
                     }
                 } else {
@@ -783,7 +829,7 @@ impl<F: MatchFunc> Poa<F> {
                             max(
                                 TracebackCell {
                                     score: traceback.get(i_p, j - 1).score
-                                        + self.scoring.match_fn.score(r, *query_base),
+                                        + self.scoring.match_fn.score(r, query_base),
                                     op: AlignmentOperation::Match(Some((i_p - 1, i - 1))),
                                 },
                                 TracebackCell {
@@ -850,7 +896,10 @@ impl<F: MatchFunc> Poa<F> {
     ///
     /// * `aln` - The alignment of the new sequence to the graph
     /// * `seq` - The sequence being incorporated
-    pub fn add_alignment(&mut self, aln: &Alignment, seq: TextSlice) {
+    pub fn add_alignment(&mut self, aln: &Alignment, seq: &[T])
+    where
+        T: Eq + Clone + PoaItem,
+    {
         let head = Topo::new(&self.graph).next(&self.graph).unwrap();
         let mut prev: NodeIndex<usize> = NodeIndex::new(head.index());
         let mut i: usize = 0;
@@ -859,8 +908,10 @@ impl<F: MatchFunc> Poa<F> {
             match op {
                 AlignmentOperation::Match(None) => {
                     let node: NodeIndex<usize> = NodeIndex::new(head.index());
-                    if (seq[i] != self.graph.raw_nodes()[head.index()].weight) && (seq[i] != b'X') {
-                        let node = self.graph.add_node(seq[i]);
+                    if seq[i] != self.graph.raw_nodes()[head.index()].weight
+                        && !seq[i].is_ambiguous()
+                    {
+                        let node = self.graph.add_node(seq[i].clone());
                         if edge_not_connected {
                             self.graph.add_edge(prev, node, 1);
                         }
@@ -876,8 +927,8 @@ impl<F: MatchFunc> Poa<F> {
                 }
                 AlignmentOperation::Match(Some((_, p))) => {
                     let node = NodeIndex::new(*p);
-                    if (seq[i] != self.graph.raw_nodes()[*p].weight) && (seq[i] != b'X') {
-                        let node = self.graph.add_node(seq[i]);
+                    if seq[i] != self.graph.raw_nodes()[*p].weight && !seq[i].is_ambiguous() {
+                        let node = self.graph.add_node(seq[i].clone());
                         self.graph.add_edge(prev, node, 1);
                         prev = node;
                     } else {
@@ -897,7 +948,7 @@ impl<F: MatchFunc> Poa<F> {
                     i += 1;
                 }
                 AlignmentOperation::Ins(None) => {
-                    let node = self.graph.add_node(seq[i]);
+                    let node = self.graph.add_node(seq[i].clone());
                     if edge_not_connected {
                         self.graph.add_edge(prev, node, 1);
                     }
@@ -906,7 +957,7 @@ impl<F: MatchFunc> Poa<F> {
                     i += 1;
                 }
                 AlignmentOperation::Ins(Some(_)) => {
-                    let node = self.graph.add_node(seq[i]);
+                    let node = self.graph.add_node(seq[i].clone());
                     self.graph.add_edge(prev, node, 1);
                     prev = node;
                     i += 1;
@@ -932,7 +983,7 @@ mod tests {
     fn test_init_graph() {
         // sanity check for String -> Graph
 
-        let scoring = Scoring::new(-1, 0, |a: u8, b: u8| if a == b { 1i32 } else { -1i32 });
+        let scoring = Scoring::new(-1, 0, |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 });
         let poa = Poa::from_string(scoring, b"123456789");
         assert!(poa.graph.is_directed());
         assert_eq!(poa.graph.node_count(), 9);
@@ -941,7 +992,7 @@ mod tests {
 
     #[test]
     fn test_alignment() {
-        let scoring = Scoring::new(-1, 0, |a: u8, b: u8| if a == b { 1i32 } else { -1i32 });
+        let scoring = Scoring::new(-1, 0, |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 });
         // examples from the POA paper
         //let _seq1 = b"PKMIVRPQKNETV";
         //let _seq2 = b"THKMLVRNETIM";
@@ -958,7 +1009,7 @@ mod tests {
 
     #[test]
     fn test_branched_alignment() {
-        let scoring = Scoring::new(-1, 0, |a: u8, b: u8| if a == b { 1i32 } else { -1i32 });
+        let scoring = Scoring::new(-1, 0, |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 });
         let seq1 = b"TTTTT";
         let seq2 = b"TTATT";
         let mut poa = Poa::from_string(scoring, seq1);
@@ -975,7 +1026,7 @@ mod tests {
 
     #[test]
     fn test_alt_branched_alignment() {
-        let scoring = Scoring::new(-1, 0, |a: u8, b: u8| if a == b { 1i32 } else { -1i32 });
+        let scoring = Scoring::new(-1, 0, |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 });
 
         let seq1 = b"TTCCTTAA";
         let seq2 = b"TTTTGGAA";
@@ -1000,7 +1051,7 @@ mod tests {
 
     #[test]
     fn test_insertion_on_branch() {
-        let scoring = Scoring::new(-1, 0, |a: u8, b: u8| if a == b { 1i32 } else { -1i32 });
+        let scoring = Scoring::new(-1, 0, |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 });
 
         let seq1 = b"TTCCGGTTTAA";
         let seq2 = b"TTGGTATGGGAA";
@@ -1025,7 +1076,7 @@ mod tests {
 
     #[test]
     fn test_poa_method_chaining() {
-        let scoring = Scoring::new(-1, 0, |a: u8, b: u8| if a == b { 1i32 } else { -1i32 });
+        let scoring = Scoring::new(-1, 0, |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 });
         let mut aligner = Aligner::new(scoring, b"TTCCGGTTTAA");
         aligner
             .global(b"TTGGTATGGGAA")
@@ -1075,11 +1126,11 @@ mod tests {
         TTGCTCGGGTCCGCGACTCGTGCGGAACTGTAAACGTCGAGGCACAACACGATTAGCCAGGTGAACATGTAGACCGCCCCGTAGA\
         TATTTTACAGTATTAATCGCCTAGTCTGTATAGGATCTTCGTTCTGCCTGTGAACATGCGGGAAGCCTGCTTGAGATTGGCAGCG\
         TCTTTGGGCAAGCGAGGACACGGGCAAATCGAGGTGG";
-        let scoring = Scoring::from_scores(-2, -2, 2, -4);
+        let scoring: Scoring<_, u8> = Scoring::from_scores(-2, -2, 2, -4);
         let mut aligner_banded = Aligner::new(scoring, s1);
         aligner_banded.global_banded(s2, 25).add_to_graph();
         aligner_banded.global_banded(s3, 25).add_to_graph();
-        let scoring = Scoring::from_scores(-2, -2, 2, -4);
+        let scoring: Scoring<_, u8> = Scoring::from_scores(-2, -2, 2, -4);
         let mut aligner_unbanded = Aligner::new(scoring, s1);
         aligner_unbanded.global(s2).add_to_graph();
         aligner_unbanded.global(s3).add_to_graph();
@@ -1093,7 +1144,7 @@ mod tests {
     #[test]
     fn test_edge_cases() {
         // case 1
-        let scoring = Scoring::new(-1, 0, |a: u8, b: u8| if a == b { 1i32 } else { -1i32 });
+        let scoring = Scoring::new(-1, 0, |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 });
         let mut aligner = Aligner::new(scoring, b"BBA");
         aligner.global(b"AAA").add_to_graph();
         let g = aligner.graph().map(|_, n| (*n) as char, |_, e| *e);
@@ -1103,7 +1154,7 @@ mod tests {
         \n    3 -> 4 [ label = \"1\" ]\n    4 -> 2 [ label = \"1\" ]\n}\n".to_string();
         assert_eq!(dot, output);
         // case 2
-        let scoring = Scoring::new(-1, 0, |a: u8, b: u8| if a == b { 1i32 } else { -1i32 });
+        let scoring = Scoring::new(-1, 0, |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 });
         let mut aligner = Aligner::new(scoring, b"AAA");
         aligner.global(b"ABA").add_to_graph();
         let g = aligner.graph().map(|_, n| (*n) as char, |_, e| *e);
@@ -1113,7 +1164,7 @@ mod tests {
         \n    3 -> 2 [ label = \"1\" ]\n}\n".to_string();
         assert_eq!(dot, output);
         // case 3
-        let scoring = Scoring::new(-1, 0, |a: u8, b: u8| if a == b { 1i32 } else { -1i32 });
+        let scoring = Scoring::new(-1, 0, |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 });
         let mut aligner = Aligner::new(scoring, b"BBBBBAAA");
         aligner.global(b"AAA").add_to_graph();
         let g = aligner.graph().map(|_, n| (*n) as char, |_, e| *e);
@@ -1124,7 +1175,7 @@ mod tests {
         \n    3 -> 4 [ label = \"1\" ]\n    4 -> 5 [ label = \"1\" ]\n    5 -> 6 [ label = \"2\" ]\n    6 -> 7 [ label = \"2\" ]\n}\n".to_string();
         assert_eq!(dot, output);
         // case 4
-        let scoring = Scoring::new(-1, 0, |a: u8, b: u8| if a == b { 1i32 } else { -1i32 });
+        let scoring = Scoring::new(-1, 0, |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 });
         let mut aligner = Aligner::new(scoring, b"AAA");
         aligner.global(b"BBBBBAAA").add_to_graph();
         let g = aligner.graph().map(|_, n| (*n) as char, |_, e| *e);
@@ -1138,7 +1189,7 @@ mod tests {
 
     #[test]
     fn test_consensus() {
-        let scoring = Scoring::new(-1, 0, |a: u8, b: u8| if a == b { 1i32 } else { -1i32 });
+        let scoring = Scoring::new(-1, 0, |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 });
         let mut aligner = Aligner::new(scoring, b"GCATGCUx");
         aligner.global(b"GCATGCU").add_to_graph();
         aligner.global(b"xCATGCU").add_to_graph();
@@ -1150,7 +1201,7 @@ mod tests {
         let x = b"GGGGGGATG";
         let y = b"ATG";
 
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -1i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 };
         let scoring = Scoring::new(-5, -1, &score).xclip(-5);
 
         let mut aligner = Aligner::new(scoring, x);
@@ -1172,7 +1223,7 @@ mod tests {
         let y = b"GGGGGGATG";
         let x = b"ATG";
 
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -1i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 };
         let scoring = Scoring::new(-5, -1, &score).yclip(-5);
 
         let mut aligner = Aligner::new(scoring, x);
@@ -1194,7 +1245,7 @@ mod tests {
         let x = b"GAAAA";
         let y = b"CG";
 
-        let score = |a: u8, b: u8| if a == b { 1i32 } else { -1i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 1i32 } else { -1i32 };
         let scoring = Scoring::new(-5, -1, &score).xclip(0).yclip(0);
 
         let mut aligner = Aligner::new(scoring, x);
@@ -1215,7 +1266,7 @@ mod tests {
         let y = b"GAAAA";
         let x = b"CG";
 
-        let score = |a: u8, b: u8| if a == b { 3i32 } else { -3i32 };
+        let score = |a: &u8, b: &u8| if *a == *b { 3i32 } else { -3i32 };
         let scoring = Scoring::new(-5, -1, &score).yclip(-5).xclip(0);
 
         let mut aligner = Aligner::new(scoring, x);

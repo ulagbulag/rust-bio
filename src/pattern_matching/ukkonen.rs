@@ -32,8 +32,8 @@ use std::iter::repeat;
 use crate::utils::TextSlice;
 
 /// Default cost function (unit costs).
-pub fn unit_cost(a: u8, b: u8) -> u32 {
-    (a != b) as u32
+pub fn unit_cost(a: &u8, b: &u8) -> u32 {
+    (*a != *b) as u32
 }
 
 /// Ukkonens algorithm.
@@ -41,7 +41,7 @@ pub fn unit_cost(a: u8, b: u8) -> u32 {
 #[derive(Default, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Serialize, Deserialize)]
 pub struct Ukkonen<F>
 where
-    F: Fn(u8, u8) -> u32,
+    F: Fn(&u8, &u8) -> u32,
 {
     D: [Vec<usize>; 2],
     cost: F,
@@ -49,7 +49,7 @@ where
 
 impl<F> Ukkonen<F>
 where
-    F: Fn(u8, u8) -> u32,
+    F: Fn(&u8, &u8) -> u32,
 {
     /// Initialize algorithm with given capacity and cost function.
     pub fn with_capacity(m: usize, cost: F) -> Self {
@@ -92,7 +92,7 @@ where
 #[derive(Debug)]
 pub struct Matches<'a, F, C, T>
 where
-    F: Fn(u8, u8) -> u32,
+    F: Fn(&u8, &u8) -> u32,
     C: Borrow<u8>,
     T: Iterator<Item = C>,
 {
@@ -106,7 +106,7 @@ where
 
 impl<'a, F, C, T> Iterator for Matches<'a, F, C, T>
 where
-    F: 'a + Fn(u8, u8) -> u32,
+    F: 'a + Fn(&u8, &u8) -> u32,
     C: Borrow<u8>,
     T: Iterator<Item = C>,
 {
@@ -126,7 +126,7 @@ where
             for j in 1..=self.lastk {
                 self.ukkonen.D[col][j] = min(
                     min(self.ukkonen.D[prev][j] + 1, self.ukkonen.D[col][j - 1] + 1),
-                    self.ukkonen.D[prev][j - 1] + (cost)(self.pattern[j - 1], *c.borrow()) as usize,
+                    self.ukkonen.D[prev][j - 1] + (cost)(&self.pattern[j - 1], c.borrow()) as usize,
                 );
             }
 
